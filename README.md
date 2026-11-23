@@ -57,7 +57,7 @@ Cada quadro tem quatro marcadores nos cantos (para achar e endireitar a imagem),
 
 As decisões de projeto e as medições estão em [`docs/decisions/0001-canal-optico.md`](docs/decisions/0001-canal-optico.md).
 
-## O que aprendemos
+## O que aprendi
 
 O Photon também foi um estudo de **como os dados viajam**. No fundo, ele é um pequeno sistema de telecomunicações, com as mesmas peças da internet, do Wi-Fi e do 4G. Só o meio muda: luz de tela entrando numa câmera.
 
