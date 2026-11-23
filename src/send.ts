@@ -1,7 +1,7 @@
 // Tela do PC: calibração (arquivo escolhido) ou teste automático (/teste) em tela cheia.
-import { CONFIGS, FH, FW, FLAG_DEFLATE, TEST_FPS, TYPE_CALIB, TYPE_DATA, TYPE_TEST, render } from './frame.ts';
+import { COARSE, FH, FINE, FW, FLAG_DEFLATE, TEST_FPS, TYPE_CALIB, TYPE_DATA, TYPE_TEST, render } from './frame.ts';
 import { RATES, makePlan, makeSender, maybeDeflate } from './transfer.ts';
-import { BACK, ICON, segValue, segmented, wireBack } from './ui.ts';
+import { BACK, ICON, formatBytes, segValue, segmented, wireBack } from './ui.ts';
 
 const FRAMES_PER_CONFIG = 6;   // calibração: imagens seguidas por nível
 const TEST_BLOCK = 20;         // teste: imagens por bloco (mesmo fps e nível); ciclo ~36 s
@@ -11,6 +11,10 @@ type Pick = (frame: number) => { config: number; fps: number };
 type Content = (frame: number) => Uint8Array;
 
 const SCREEN = '<canvas id="screen"></canvas>';
+// celular enviando: a webcam do PC costuma rodar a 30 fps → 15 imagens/s respeita a regra dos 2×
+const PHONE = matchMedia('(pointer: coarse)').matches;
+// celular enviando: níveis grossos (células grandes) para a webcam conseguir ler a tela pequena
+const LEVELS = PHONE ? COARSE : FINE;
 const newSession = () => crypto.getRandomValues(new Uint32Array(1))[0];
 
 export function mountSend(root: HTMLElement) {
@@ -31,14 +35,14 @@ export function mountSend(root: HTMLElement) {
 
     <div class="section">Calibração</div>
     <div class="surface card">
-      <div class="row"><span class="label grow">Imagens/s</span>${segmented('fps', [10, 15, 20, 30].map((f) => [f, String(f)]), 20)}</div>
+      <div class="row"><span class="label grow">Imagens/s</span>${segmented('fps', [10, 15, 20, 30].map((f) => [f, String(f)]), PHONE ? 15 : 20)}</div>
       <div class="row"><button class="btn secondary block" id="calib" disabled>Calibrar</button></div>
     </div>
-    <p class="footnote">O celular mostra o nível e a paridade. Esc sai da tela cheia.</p>
+    <p class="footnote">${PHONE ? 'Brilho no máximo. O PC mostra o nível e a paridade. Toque para parar.' : 'O celular mostra o nível e a paridade. Esc sai da tela cheia.'}</p>
 
     <div class="section">Transferência</div>
     <div class="surface card">
-      <div class="row"><span class="label grow">Nível</span>${segmented('level', CONFIGS.map((_, i) => [i, String(i + 1)]), 7)}</div>
+      <div class="row"><span class="label grow">Nível</span>${segmented('level', LEVELS.map((c, i) => [c, String(i + 1)]), PHONE ? COARSE[2] : 7)}</div>
       <div class="row"><span class="label grow">Paridade</span>${segmented('rate', RATES.map((r) => [r, `${Math.round((1 - r) * 100)}%`]), 0.75)}</div>
       <div class="row"><button class="btn grow" id="start" disabled>Iniciar</button><span class="mono" id="plan"></span></div>
     </div>
@@ -79,7 +83,7 @@ export function mountSend(root: HTMLElement) {
     const sha = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes as BufferSource));
     file = { name: f.name, size: f.size, sha };
     session = newSession();
-    info.textContent = `${(f.size / 1024 / 1024).toFixed(1)} MB`;
+    info.textContent = formatBytes(f.size);
     calib.disabled = false;
     prepare();
   }
@@ -90,7 +94,7 @@ export function mountSend(root: HTMLElement) {
 
   calib.onclick = () => {
     const f = fps();
-    play(screen, file!, session, TYPE_CALIB, (n) => ({ config: Math.floor(n / FRAMES_PER_CONFIG) % CONFIGS.length, fps: f }));
+    play(screen, file!, session, TYPE_CALIB, (n) => ({ config: LEVELS[Math.floor(n / FRAMES_PER_CONFIG) % LEVELS.length], fps: f }));
   };
   start.onclick = () => {
     if (!ready) return;
@@ -100,8 +104,8 @@ export function mountSend(root: HTMLElement) {
 }
 
 export function mountTest(root: HTMLElement) {
-  const blocks = CONFIGS.length * TEST_FPS.length;
-  const cycle = CONFIGS.length * TEST_BLOCK * TEST_FPS.reduce((s, f) => s + 1 / f, 0);
+  const blocks = FINE.length * TEST_FPS.length;
+  const cycle = FINE.length * TEST_BLOCK * TEST_FPS.reduce((s, f) => s + 1 / f, 0);
   root.innerHTML = `
     ${BACK}
     <h1>Teste automático</h1>
@@ -116,18 +120,29 @@ export function mountTest(root: HTMLElement) {
   root.querySelector<HTMLButtonElement>('#go')!.onclick = () =>
     play(screen, { name: 'teste', size: 0, sha: new Uint8Array(32) }, newSession(), TYPE_TEST, (f) => {
       const b = Math.floor(f / TEST_BLOCK) % blocks; // nível por fora, fps por dentro: mesma distância p/ os 3 fps
-      return { config: Math.floor(b / TEST_FPS.length), fps: TEST_FPS[b % TEST_FPS.length] };
+      return { config: FINE[Math.floor(b / TEST_FPS.length)], fps: TEST_FPS[b % TEST_FPS.length] };
     });
 }
 
 let running = false;
+let wake: WakeLockSentinel | null = null;
 
 async function play(screen: HTMLCanvasElement, meta: Meta, session: number, type: number, pick: Pick, content?: Content) {
   screen.style.display = 'block';
-  try { await screen.requestFullscreen(); } catch { screen.style.display = 'none'; return; }
-  document.onfullscreenchange = () => {
-    if (!document.fullscreenElement) { running = false; screen.style.display = 'none'; }
+  // iPhone: sem Fullscreen API para páginas → o quadro cobre a área visível e um toque encerra
+  let overlay = false;
+  try { await screen.requestFullscreen(); } catch { overlay = true; screen.classList.add('overlay'); }
+  const stop = () => {
+    running = false;
+    screen.style.display = 'none';
+    screen.classList.remove('overlay');
+    wake?.release().catch(() => {});
+    wake = null;
   };
+  document.onfullscreenchange = () => { if (!document.fullscreenElement && !overlay) stop(); };
+  screen.onclick = overlay ? stop : null;
+  try { wake = (await navigator.wakeLock?.request('screen')) ?? null; } catch { /* sem Wake Lock: a tela pode apagar */ }
+
   screen.width = Math.round(screen.clientWidth * devicePixelRatio);
   screen.height = Math.round(screen.clientHeight * devicePixelRatio);
   const ctx = screen.getContext('2d')!;
@@ -135,10 +150,13 @@ async function play(screen: HTMLCanvasElement, meta: Meta, session: number, type
   off.width = FW; off.height = FH;
   const octx = off.getContext('2d')!, img = octx.createImageData(FW, FH), px = new Uint32Array(img.data.buffer);
 
+  // tela em pé (celular): gira o quadro 90° para usar o lado comprido; giro de 90° mantém o 1:1 dos pixels
+  const rotate = screen.height > screen.width;
+  const W = rotate ? screen.height : screen.width, Hs = rotate ? screen.width : screen.height;
   // 1:1 se couber (células nítidas); escala inteira se sobrar; fracionária só em tela menor que 1920×1080
-  let s = Math.min(screen.width / FW, screen.height / FH);
+  let s = Math.min(W / FW, Hs / FH);
   if (s >= 1) s = Math.floor(s);
-  const w = FW * s, h = FH * s, x = Math.floor((screen.width - w) / 2), y = Math.floor((screen.height - h) / 2);
+  const w = FW * s, h = FH * s, x = Math.floor((W - w) / 2), y = Math.floor((Hs - h) / 2);
 
   let frame = 0, last = -Infinity;
   running = true;
@@ -149,8 +167,10 @@ async function play(screen: HTMLCanvasElement, meta: Meta, session: number, type
       last = now;
       render(px, { type, config, fps, session, frame, ...meta }, content?.(frame));
       octx.putImageData(img, 0, 0);
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.fillStyle = '#000';
       ctx.fillRect(0, 0, screen.width, screen.height);
+      if (rotate) ctx.setTransform(0, 1, -1, 0, screen.width, 0); // (u, v) → (largura − v, u): 90° horário
       ctx.imageSmoothingEnabled = s < 1;
       ctx.drawImage(off, x, y, w, h);
       frame++;

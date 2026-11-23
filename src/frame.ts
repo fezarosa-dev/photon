@@ -40,8 +40,20 @@ for (const r of [0, 255]) for (const g of [0, 85, 255, 170]) for (const b of [0,
 const PALETTES: Record<number, RGB[]> = { 4: PAL4, 8: PAL8, 16: PAL16 };
 
 export interface Config { cell: number; colors: number }
-/** Níveis de densidade testados na calibração: tamanho da célula (px de quadro) × nº de cores. */
-export const CONFIGS: Config[] = [10, 8, 6, 5].flatMap((cell) => [4, 8, 16].map((colors) => ({ cell, colors })));
+/**
+ * Níveis de densidade: tamanho da célula (px de quadro) × nº de cores. O índice vai no cabeçalho.
+ * FINE: tela grande → câmera boa (PC → celular). COARSE: tela pequena → webcam (celular → PC), células até 8× maiores.
+ */
+export const CONFIGS: Config[] = [
+  ...[10, 8, 6, 5].flatMap((cell) => [4, 8, 16].map((colors) => ({ cell, colors }))),
+  ...[40, 32, 24, 16, 12].flatMap((cell) => [4, 8].map((colors) => ({ cell, colors }))),
+];
+const range = (a: number, b: number) => Array.from({ length: b - a }, (_, i) => a + i);
+export const FINE = range(0, 12);
+export const COARSE = range(12, CONFIGS.length);
+export const profileOf = (config: number) => (config >= FINE.length ? COARSE : FINE);
+/** Número do nível mostrado ao usuário: posição dentro do perfil (1, 2, 3…). */
+export const levelNumber = (config: number) => profileOf(config).indexOf(config) + 1;
 
 export function grid(c: Config) {
   const cols = Math.floor(FW / c.cell), rows = Math.floor((CELL_Y1 - CELL_Y0) / c.cell);
@@ -116,7 +128,8 @@ function utf8Prefix(s: string, max: number) {
 
 function packHeader(h: Header): Uint8Array {
   const b = new Uint8Array(HEADER_BYTES), dv = new DataView(b.buffer);
-  b[0] = 0x51; b[1] = 0x46; b[2] = VERSION; b[3] = h.type; b[4] = h.config; b[5] = h.fps;
+  // identificação do protocolo: 'PH' (Photon)
+  b[0] = 0x50; b[1] = 0x48; b[2] = VERSION; b[3] = h.type; b[4] = h.config; b[5] = h.fps;
   dv.setUint32(6, h.session);
   dv.setUint32(10, h.frame);
   dv.setBigUint64(14, BigInt(h.size));
@@ -133,7 +146,7 @@ function packHeader(h: Header): Uint8Array {
 
 function unpackHeader(b: Uint8Array): Header | null {
   const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
-  if (b[0] !== 0x51 || b[1] !== 0x46 || b[2] !== VERSION) return null;
+  if (b[0] !== 0x50 || b[1] !== 0x48 || b[2] !== VERSION) return null;
   if (dv.getUint32(81) !== crc32(b.subarray(0, 81))) return null;
   if (b[4] >= CONFIGS.length) return null;
   return {
@@ -370,24 +383,27 @@ export type Status = 'sem-marcadores' | 'sem-cabecalho' | 'misturado' | 'ok';
 export interface Decoded {
   status: Status; anchors: Pt[] | null; header?: Header; errors?: number; cells?: number; wrong?: Uint8Array;
   llr?: Float32Array; // quadros de dados: bits suaves, na ordem das células
+  mirrored?: boolean; // a câmera já entrega a imagem espelhada
 }
 
 /** wantData: decide se vale ler as células de um quadro de dados (ex.: pular quadro já aproveitado). */
 export function decodeFrame(img: Img, wantData: (h: Header) => boolean = () => true): Decoded {
   const anchors = findAnchors(img);
   if (!anchors) return { status: 'sem-marcadores', anchors: null };
-  for (let r = 0; r < 4; r++) { // orientação desconhecida: tenta as 4 rotações, o CRC decide
-    const ordered = [0, 1, 2, 3].map((i) => anchors[(i + r) % 4]); // TL, TR, BR, BL do quadro
+  // orientação desconhecida: 4 rotações × (normal | espelhado — webcams costumam espelhar); o CRC decide
+  for (let r = 0; r < 8; r++) {
+    const ordered = [0, 1, 2, 3].map((i) => anchors[r < 4 ? (i + r) % 4 : (r - i + 4) % 4]); // TL, TR, BR, BL do quadro
     const H = homography(ANCHOR_CENTERS, ordered);
     const top = readHeader(img, H, HDR_TOP_Y);
     if (!top) continue;
     const bot = readHeader(img, H, HDR_BOT_Y);
     // topo e base com quadros diferentes = câmera filmou a troca de imagem
-    if (!bot || bot.frame !== top.frame || bot.session !== top.session) return { status: 'misturado', anchors: ordered, header: top };
+    const mirrored = r >= 4;
+    if (!bot || bot.frame !== top.frame || bot.session !== top.session) return { status: 'misturado', anchors: ordered, header: top, mirrored };
     if (top.type === TYPE_DATA) {
-      return { status: 'ok', anchors: ordered, header: top, llr: wantData(top) ? softBits(classify(img, H, CONFIGS[top.config])) : undefined };
+      return { status: 'ok', anchors: ordered, header: top, mirrored, llr: wantData(top) ? softBits(classify(img, H, CONFIGS[top.config])) : undefined };
     }
-    return { status: 'ok', anchors: ordered, header: top, ...measure(classify(img, H, CONFIGS[top.config]), top) };
+    return { status: 'ok', anchors: ordered, header: top, mirrored, ...measure(classify(img, H, CONFIGS[top.config]), top) };
   }
   return { status: 'sem-cabecalho', anchors };
 }

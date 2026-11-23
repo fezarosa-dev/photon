@@ -1,45 +1,49 @@
 // Tela do celular: filma, lê cada quadro e mede o erro por nível até declarar "Calibrado".
-import { ANCHOR_CENTERS, CONFIGS, FLAG_DEFLATE, bitsOf, rawKbps, TYPE_DATA, TYPE_TEST, decodeFrame, hex, kbps, type Header, type Status } from './frame.ts';
+import { ANCHOR_CENTERS, CONFIGS, FLAG_DEFLATE, bitsOf, levelNumber, profileOf, rawKbps, TYPE_DATA, TYPE_TEST, decodeFrame, hex, kbps, type Header, type Status } from './frame.ts';
 import { inflate, makePlan, makeReceiver, pickRate, rxKey, type Words } from './transfer.ts';
 import type { Done, Job } from './worker.ts';
-import { BACK_CAM, segValue, segmented, wireBack } from './ui.ts';
+import { BACK_CAM, ICON, formatBytes, segValue, segmented, wireBack } from './ui.ts';
 import { createLog } from './log.ts';
 import type { Pt } from './detect.ts';
 
 const MIN_FRAMES = 5;   // leituras limpas por nível para considerar medido
 const MAX_ERR = 0.05;   // ponytail: erro de símbolo tolerável estimado; recalibrar quando o LDPC existir
 const SYNC_MS = 10_000; // envio automático das planilhas ao PC (só no servidor de desenvolvimento)
+const TOUCH = matchMedia('(pointer: coarse)').matches;
 const ROT_STABLE = 6;   // quadros seguidos no mesmo ângulo antes de girar o painel
 const LOST_MS = 600;    // só pede para enquadrar depois desse tempo sem ler nenhum quadro
 const ACTION_TEXT = {
-  pronto: '✅ Pode parar', enquadre: '🔲 Enquadre os 4 cantos', parado: '✋ Fique parado',
-  aproxime: '⬆️ Aproxime', afaste: '⬇️ Afaste',
+  pronto: 'Pode parar', enquadre: 'Enquadre os 4 cantos', parado: 'Fique parado',
+  aproxime: 'Aproxime', afaste: 'Afaste',
 } as const;
 
 /** auto: abre a câmera já (chamado de dentro do clique, que o Safari exige para a câmera). */
 export function mountReceive(root: HTMLElement, auto = false) {
   document.body.classList.add('cam');
-  const RING = 2 * Math.PI * 52;
   root.innerHTML = `
     <div class="view">
       <video id="v" playsinline muted></video><canvas id="ov"></canvas>
       ${BACK_CAM}
       <div class="center"><div class="stack" id="stack">
         <span class="pill glass" id="pill">Enquadre a tela do PC</span>
-        <svg class="ring" id="ring" viewBox="0 0 120 120" style="display:none" aria-hidden="true">
-          <circle class="track" cx="60" cy="60" r="52"/>
-          <circle class="bar" id="ringbar" cx="60" cy="60" r="52" stroke-dasharray="${RING}" stroke-dashoffset="${RING}"/>
-        </svg>
         <p id="verdict" class="verdict" role="status" aria-live="polite">Toque em Abrir câmera</p>
       </div></div>
       <div class="toolbar">
         <div class="group glass">${segmented('res', [['1920x1080', '1080p'], ['2560x1440', '1440p'], ['3840x2160', '4K']], '1920x1080')}</div>
         <button class="btn" id="go">Abrir câmera</button>
         <button class="btn success" id="save" hidden>Salvar</button>
+        <div class="group glass" id="tools" hidden>
+          <button class="icon-btn" id="reset" aria-label="Recomeçar recepção" title="Recomeçar">${ICON.reset}</button>
+          <button class="icon-btn" id="cam" aria-label="Trocar câmera" title="Trocar câmera" hidden>${ICON.camera}</button>
+        </div>
       </div>
     </div>`;
   const $ = <T extends HTMLElement>(id: string) => root.querySelector<T>('#' + id)!;
-  const pill = $('pill'), ring = $('ring'), ringbar = $('ringbar'), stack = $('stack');
+  const camBtn = $<HTMLButtonElement>('cam'), tools = $('tools'), view = root.querySelector<HTMLElement>('.view')!;
+  if (!TOUCH) view.classList.add('mirror'); // até ler o primeiro quadro, assume webcam sem espelho
+  let camId = '', cams: MediaDeviceInfo[] = []; // câmera escolhida (no PC há várias: integrada, USB…)
+  let pillNote = '', pillUntil = 0; // aviso curto na pílula (ex.: nome da câmera)
+  const pill = $('pill'), stack = $('stack');
   let rot = 0, rotCand = 0, rotHits = 0; // giro do painel: segue a tela do PC na imagem (celular deitado)
   const go = $<HTMLButtonElement>('go'), video = $<HTMLVideoElement>('v'), ov = $<HTMLCanvasElement>('ov');
   const verdict = $('verdict');
@@ -49,7 +53,7 @@ export function mountReceive(root: HTMLElement, auto = false) {
   const save = $<HTMLButtonElement>('save');
 
   // ---- recepção de arquivo (quadros de dados) ----
-  type Rx = { key: string; h: Header; rx: ReturnType<typeof makeReceiver>; done: Set<number>; t0: number; result?: string };
+  type Rx = { key: string; h: Header; rx: ReturnType<typeof makeReceiver>; done: Set<number>; t0: number; result?: string; ok?: boolean };
   let rx: Rx | null = null;
 
   async function finish(r: Rx) {
@@ -58,7 +62,8 @@ export function mountReceive(root: HTMLElement, auto = false) {
     const sha = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes as BufferSource));
     const ok = hex(sha) === hex(r.h.sha);
     const secs = (performance.now() - r.t0) / 1000;
-    r.result = ok ? `✅ Arquivo íntegro\n${(bytes.length / 1024 / secs).toFixed(0)} KB/s · ${secs.toFixed(0)} s` : '❌ SHA-256 não confere';
+    r.ok = ok;
+    r.result = ok ? `Arquivo íntegro\n${formatBytes(bytes.length)} · ${formatBytes(bytes.length / secs)}/s · ${secs.toFixed(0)} s` : 'O arquivo chegou diferente.\nRecomece a transferência.';
     if (!ok) return;
     const file = new File([bytes as BlobPart], r.h.name || 'arquivo', { type: 'application/octet-stream' });
     save.hidden = false;
@@ -108,9 +113,11 @@ export function mountReceive(root: HTMLElement, auto = false) {
     try {
       video.srcObject = await navigator.mediaDevices.getUserMedia({
         audio: false,
-        video: { facingMode: { ideal: 'environment' }, width: { ideal: w }, height: { ideal: h }, frameRate: { ideal: 60 } },
+        video: { ...(camId ? { deviceId: { exact: camId } } : { facingMode: { ideal: 'environment' } }),
+          width: { ideal: w }, height: { ideal: h }, frameRate: { ideal: 60 } },
       });
       await video.play();
+      if (await pickCamera()) return start(); // trocou para a câmera preferida: reabre com ela
     } catch (e) {
       verdict.textContent = 'Não foi possível abrir a câmera: ' + (e as Error).message;
       return;
@@ -118,9 +125,38 @@ export function mountReceive(root: HTMLElement, auto = false) {
     resetStats();
     if (go.hidden) return; // troca de resolução: o laço já está rodando
     go.hidden = true;
+    tools.hidden = false;
     t0 = performance.now();
     schedule();
   }
+  /** No computador: lista as câmeras (nomes só aparecem após a permissão) e prefere a integrada, que tem mais resolução. */
+  async function pickCamera() {
+    if (TOUCH) return false; // no celular a câmera traseira já é a certa; menos é mais
+    cams = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'videoinput');
+    const current = (video.srcObject as MediaStream).getVideoTracks()[0]?.getSettings().deviceId ?? '';
+    if (!camId) {
+      const integrated = cams.find((d) => /integrated|integrada|built-?in|facetime/i.test(d.label));
+      camId = integrated?.deviceId ?? current;
+      if (camId !== current) return true;
+    }
+    camBtn.hidden = cams.length < 2;
+    return false;
+  }
+  camBtn.onclick = () => { // ciclo entre as câmeras, como o botão de virar câmera do iPhone
+    const next = cams[(cams.findIndex((d) => d.deviceId === camId) + 1) % cams.length];
+    camId = next.deviceId;
+    pillNote = next.label.replace(/\s*\(.*\)$/, '') || 'Câmera';
+    pillUntil = performance.now() + 2500;
+    start();
+  };
+  // recomeçar: descarta o arquivo em andamento (e a calibração) para receber outro do zero
+  $<HTMLButtonElement>('reset').onclick = () => {
+    rx = null; header = null;
+    resetStats();
+    save.hidden = true;
+    verdict.className = 'verdict';
+    verdict.textContent = 'Pronto para um novo arquivo';
+  };
   go.onclick = start;
   if (auto) start();
   root.querySelector('input[name="res"]')!.closest('.seg')!.addEventListener('change', () => { if (go.hidden) start(); });
@@ -142,7 +178,7 @@ export function mountReceive(root: HTMLElement, auto = false) {
     const track = (video.srcObject as MediaStream | null)?.getVideoTracks()[0];
     const fps = header?.fps ?? 15;
     return [
-      `qrFI relatório · ${new Date().toISOString()}`,
+      `Photon relatório · ${new Date().toISOString()}`,
       `ua: ${navigator.userAgent}`,
       `tela ${screen.width}x${screen.height} dpr ${devicePixelRatio}`,
       statText,
@@ -196,7 +232,10 @@ export function mountReceive(root: HTMLElement, auto = false) {
     const ldpc = res.status === 'ok' && res.header?.type === TYPE_DATA ? onData(res.header, words) : '';
     lastStatus = res.status;
     if (res.status === 'ok' || res.status === 'misturado') lastSeen = now;
-    if (res.status === 'ok' && res.anchors) follow(res.anchors);
+    if (res.status === 'ok' && res.anchors) {
+      if (TOUCH) follow(res.anchors); // giro do painel: só no celular (no PC a pessoa está sempre em pé)
+      else view.classList.toggle('mirror', !res.mirrored); // espelha só se a webcam já não espelhar
+    }
     const inst = res.anchors ? perimeterRatio(res.anchors) : 0;
     if (res.anchors) scale = 0.8 * scale + 0.2 * inst;
     log.add(res, inst, camFps, procFps, ldpc);
@@ -255,9 +294,7 @@ export function mountReceive(root: HTMLElement, auto = false) {
 
   function ui() {
     const now = performance.now();
-    if (go.hidden) pill.textContent = `${camFps.toFixed(0)} fps · escala ${scale.toFixed(2)}× · ${procFps.toFixed(0)} lidas/s`;
-    ring.style.display = rx && header?.type === TYPE_DATA ? 'block' : 'none'; // SVG não tem a propriedade hidden
-    if (rx) ringbar.setAttribute('stroke-dashoffset', String(RING * (1 - rx.rx.progress)));
+    if (go.hidden) pill.textContent = now < pillUntil ? pillNote : `${camFps.toFixed(0)} fps · ${procFps.toFixed(0)} lidas/s`;
     const fps = header?.fps ?? 15, span = seen.size ? Math.min(USE_WINDOW, seenMax - Math.min(...seen) + 1) : 0;
     // imagens distintas lidas ÷ imagens mostradas pelo PC (pelo índice no cabeçalho)
     const use = span ? Math.min(1, seen.size / span) : 0;
@@ -269,20 +306,21 @@ export function mountReceive(root: HTMLElement, auto = false) {
 
     let best = -1, bestNet = 0;
     const FOUNTAIN = 0.93; // ~7% de pacotes a mais no fountain (medido)
-    CONFIGS.forEach((c, i) => { // melhor nível = maior vazão líquida com a paridade que o erro medido exige
-      const s = stats[i], R = s.frames >= MIN_FRAMES ? pickRate(s.errors / s.cells, bitsOf(c)) : 0;
+    const levels = header ? profileOf(header.config) : []; // só os níveis do perfil que o emissor está calibrando
+    levels.forEach((i) => { // melhor nível = maior vazão líquida com a paridade que o erro medido exige
+      const c = CONFIGS[i], s = stats[i], R = s.frames >= MIN_FRAMES ? pickRate(s.errors / s.cells, bitsOf(c)) : 0;
       const net = rawKbps(c, fps) * R * FOUNTAIN * (use || 1);
       if (R && net > bestNet) { best = i; bestNet = net; }
     });
 
-    const done = header && stats.every((s) => s.frames >= MIN_FRAMES);
+    const done = header && levels.every((i) => stats[i].frames >= MIN_FRAMES);
     const hint = lastStatus === 'sem-marcadores' || lastStatus === 'sem-cabecalho' ? '\nenquadre os 4 cantos'
-      : scale < 0.8 ? `\nescala ${scale.toFixed(2)}×: aproxime` : `\nescala ${scale.toFixed(2)}× ✓`;
+      : scale < 0.8 ? '\nAproxime' : '';
     if (rx && header?.type === TYPE_DATA) {
       const r = rx, s = r.rx.stats, secs = (now - r.t0) / 1000, p = r.rx.progress;
-      const rate = r.rx.usefulBytes / 1024 / Math.max(secs, 0.1), left = p > 0 ? (secs * (1 - p)) / p : Infinity;
-      verdict.textContent = r.result ?? `${(100 * r.rx.progress).toFixed(0)}%\n${rate.toFixed(0)} KB/s · faltam ${Number.isFinite(left) ? Math.ceil(left) + ' s' : '…'}`;
-      verdict.className = 'verdict big' + (r.result?.startsWith('✅') ? ' done' : r.result ? ' warn' : '');
+      const rate = r.rx.usefulBytes / Math.max(secs, 0.1);
+      verdict.textContent = r.result ?? `${(100 * p).toFixed(0)}% de ${formatBytes(r.h.size)}\n${formatBytes(rate)}/s`;
+      verdict.className = 'verdict big' + (r.ok ? ' done' : r.result ? ' warn' : '');
       metaText = `Recebendo ${r.h.name} · ${r.h.size.toLocaleString('pt-BR')} bytes · palavras ok ${s.wordsOk}/${s.words} · CRC falhou ${s.crcFail} · pacotes ${s.received}/${r.rx.k} · recuperados ${s.recovered}`;
       return;
     }
@@ -296,7 +334,7 @@ export function mountReceive(root: HTMLElement, auto = false) {
     }
     verdict.textContent = !done ? 'Calibrando…' + hint
       : best < 0 ? 'Calibrado: nenhum nível com erro aceitável. Aproxime, reduza o reflexo ou baixe as imagens/s no PC.'
-      : `✅ No PC: nível ${best + 1} · paridade ${Math.round((1 - pickRate(stats[best].errors / stats[best].cells, bitsOf(CONFIGS[best]))) * 100)}%\n~${bestNet.toFixed(0)} KB/s líquidos`;
+      : `Use nível ${levelNumber(best)} · paridade ${Math.round((1 - pickRate(stats[best].errors / stats[best].cells, bitsOf(CONFIGS[best]))) * 100)}%\n~${bestNet.toFixed(0)} KB/s líquidos`;
     verdict.className = 'verdict' + (!done ? '' : best < 0 ? ' warn' : ' done');
   }
 }

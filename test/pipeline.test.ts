@@ -70,3 +70,13 @@ test('cantos voltam na ordem do quadro: dá o ângulo da tela na imagem (giro do
   assert.equal(angle(TILT), 0);                                  // tela em pé
   assert.equal(angle([TILT[2], TILT[3], TILT[0], TILT[1]]), 180); // celular de ponta-cabeça
 });
+
+test('câmera espelhada (webcam): quadro lido mesmo assim', () => {
+  // espelho horizontal: o canto TL do quadro aparece onde estaria o TR, e assim por diante
+  const res = decodeFrame(camera(frame(0), [TILT[1], TILT[0], TILT[3], TILT[2]]));
+  assert.equal(res.status, 'ok');
+  assert.equal(res.mirrored, true); // a prévia do PC usa isso para não espelhar duas vezes
+  assert.equal(decodeFrame(camera(frame(0), TILT)).mirrored, false);
+  assertHeader(res.header, 0);
+  assert.ok(res.errors! / res.cells! < 0.01, `erro ${res.errors}/${res.cells}`);
+});

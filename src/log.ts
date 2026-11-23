@@ -1,5 +1,5 @@
 // Registro das leituras no celular → planilhas CSV (resumo agregado + leituras brutas).
-import { CONFIGS, TEST_FPS, kbps, type Decoded } from './frame.ts';
+import { CONFIGS, FINE, TEST_FPS, kbps, type Decoded } from './frame.ts';
 
 const MAX_RAW = 200_000; // ~15 MB de CSV; suficiente para >1 h a 50 leituras/s
 const GAP = 60;          // salto de índice que encerra um bloco (celular perdeu a tela)
@@ -84,8 +84,8 @@ export function createLog() {
     const head = ['t_ms', 'status', 'quadro', 'fps_emissor', 'nivel', 'escala', 'erros', 'celulas', 'cam_fps', 'proc_fps', 'ldpc_ok'];
     const metaCsv = meta.map((m) => '# ' + m.replace(/\n/g, ' ')).join('\n') + '\n';
     return [
-      new File([metaCsv + csv(summary)], `qrfi-resumo-${stamp}.csv`, { type: 'text/csv' }),
-      new File([csv([head, ...raw])], `qrfi-leituras-${stamp}.csv`, { type: 'text/csv' }),
+      new File([metaCsv + csv(summary)], `photon-resumo-${stamp}.csv`, { type: 'text/csv' }),
+      new File([csv([head, ...raw])], `photon-leituras-${stamp}.csv`, { type: 'text/csv' }),
     ];
   }
 
@@ -94,7 +94,8 @@ export function createLog() {
    * Meta: em cada distância de TARGETS, toda combinação fps × nível com MIN_READS leituras.
    */
   function coverage(scaleNow: number) {
-    const total = TEST_FPS.length * CONFIGS.length, done = new Map<number, number>(TARGETS.map((s) => [s, 0]));
+    // o teste automático varre só os níveis finos
+    const total = TEST_FPS.length * FINE.length, done = new Map<number, number>(TARGETS.map((s) => [s, 0]));
     for (const r of agg.values()) if (done.has(r.scale) && r.reads >= MIN_READS) done.set(r.scale, done.get(r.scale)! + 1);
     const progress = Math.round((100 * [...done.values()].reduce((s, d) => s + Math.min(d, total), 0)) / (total * TARGETS.length));
     const todo = TARGETS.filter((s) => done.get(s)! < total);

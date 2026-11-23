@@ -92,3 +92,7 @@ Conclusões:
   Próximo passo: um pool de Web Workers para ler e decodificar em paralelo.
 - Fountain: só pacotes de reparo (id ≥ k). O modo sistemático exigia ~37% a mais de pacotes com perdas, contra 6–15% no reparo puro.
 - A paridade é escolhida pela calibração (`pickRate`), a partir dos limites medidos do LDPC com folga de 0,7.
+
+## Nome (2026-11-23)
+
+O app passa a se chamar **Photon** (fóton em inglês): a partícula de luz que carrega a informação. A pasta, o pacote e a identificação do protocolo no cabeçalho também foram renomeados (`photon`, `PH`). Antes de publicar, checar disponibilidade de domínio, App Store e marca.

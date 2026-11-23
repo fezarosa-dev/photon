@@ -1,5 +1,9 @@
-node_modules
-dist
-amostras
-baixadowwpp
-relatorios
+# dependências e build
+node_modules/
+dist/
+
+# arquivos de trabalho (imagens de teste, telemetria, downloads)
+amostras/
+testes/
+baixadowwpp/
+relatorios/

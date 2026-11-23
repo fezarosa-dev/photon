@@ -1,5 +1,5 @@
 {
-  "name": "qrfi",
+  "name": "photon",
   "version": "0.0.0",
   "description": "Transferência de arquivos por canal óptico (tela → câmera)",
   "directories": {

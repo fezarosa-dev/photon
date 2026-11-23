@@ -8,12 +8,12 @@ const MAX_BYTES = 50e6;
 // Só em desenvolvimento: o celular grava as planilhas/relatórios de teste em ./relatorios.
 // É telemetria do teste, não o canal de dados (esse continua sendo só a luz).
 const reports = (): Plugin => ({
-  name: 'qrfi-relatorios',
+  name: 'photon-relatorios',
   configureServer(server) {
     server.middlewares.use('/__relatorio', (req, res) => {
       if (req.method !== 'POST') { res.statusCode = 405; res.end(); return; }
       const name = basename(new URL(req.url ?? '', 'http://x').searchParams.get('nome') ?? '').replace(/[^\w.-]/g, '_');
-      if (!/^qrfi-[\w.-]+\.(csv|png)$/.test(name)) { res.statusCode = 400; res.end('nome inválido'); return; }
+      if (!/^photon-[\w.-]+\.(csv|png)$/.test(name)) { res.statusCode = 400; res.end('nome inválido'); return; }
       const chunks: Buffer[] = [];
       let size = 0;
       req.on('data', (c: Buffer) => {
@@ -32,7 +32,9 @@ const reports = (): Plugin => ({
 });
 
 // HTTPS local: o Safari do iPhone só libera a câmera em contexto seguro.
-export default defineConfig({
+// Build: publicado no GitHub Pages em /photon/ (https de verdade, sem aviso de certificado).
+export default defineConfig(({ command }) => ({
+  base: command === 'build' ? '/photon/' : '/',
   plugins: [basicSsl(), reports()],
   server: { host: true },
-});
+}));
