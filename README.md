@@ -17,7 +17,7 @@
   <img alt="TypeScript 7" src="https://img.shields.io/badge/TypeScript-7-3178c6?logo=typescript&logoColor=white">
   <img alt="Vite 8" src="https://img.shields.io/badge/Vite-8-646cff?logo=vite&logoColor=white">
   <img alt="Testes em Node 24" src="https://img.shields.io/badge/testes-Node_24-5fa04e?logo=nodedotjs&logoColor=white">
-  <img alt="Funciona em iPhone e PC" src="https://img.shields.io/badge/funciona_em-iPhone_·_PC-8e8e93">
+  <img alt="Roda no navegador: Android, iPhone e PC" src="https://img.shields.io/badge/roda_no_navegador-Android_·_iPhone_·_PC-8e8e93">
 </p>
 
 ## Por quê
@@ -28,7 +28,7 @@ O segundo objetivo é **privacidade**: o arquivo não sai dos dois aparelhos. El
 
 ## Como usar
 
-1. Abra o site nos dois aparelhos.
+1. Abra o site nos dois aparelhos: Android, iPhone ou computador, em qualquer navegador moderno com câmera. Não precisa instalar nada.
 2. No aparelho que tem o arquivo, toque em **Enviar** e escolha o arquivo. No outro, toque em **Receber**.
 3. **Calibrar**: aponte a câmera para a tela. Quem recebe indica o **nível** e a **paridade** ideais para aquele par de aparelhos.
 4. Escolha esses valores e toque em **Iniciar**. O arquivo chega idêntico, conferido por SHA-256, e é salvo no aparelho.
@@ -37,6 +37,8 @@ O segundo objetivo é **privacidade**: o arquivo não sai dos dois aparelhos. El
 |---|---|---|
 | Computador → celular | câmera do celular | ~80–200 KB/s |
 | Celular → computador | webcam | ~3–26 KB/s (limitada pela webcam) |
+
+**Testado em:** iPhone 16 (Safari) e PC (Chrome, Linux). No Android (Chrome), o app usa as mesmas APIs da web (câmera, tela cheia, workers); a validação num aparelho real está pendente.
 
 ## Segurança e privacidade
 

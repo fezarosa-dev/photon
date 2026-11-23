@@ -129,7 +129,8 @@ let wake: WakeLockSentinel | null = null;
 
 async function play(screen: HTMLCanvasElement, meta: Meta, session: number, type: number, pick: Pick, content?: Content) {
   screen.style.display = 'block';
-  // iPhone: sem Fullscreen API para páginas → o quadro cobre a área visível e um toque encerra
+  // iPhone: sem Fullscreen API para páginas → o quadro cobre a área visível. Android: tela cheia de verdade.
+  // Em qualquer celular, um toque encerra; no PC, Esc.
   let overlay = false;
   try { await screen.requestFullscreen(); } catch { overlay = true; screen.classList.add('overlay'); }
   const stop = () => {
@@ -140,7 +141,7 @@ async function play(screen: HTMLCanvasElement, meta: Meta, session: number, type
     wake = null;
   };
   document.onfullscreenchange = () => { if (!document.fullscreenElement && !overlay) stop(); };
-  screen.onclick = overlay ? stop : null;
+  screen.onclick = overlay || PHONE ? () => { if (document.fullscreenElement) document.exitFullscreen().catch(() => {}); stop(); } : null;
   try { wake = (await navigator.wakeLock?.request('screen')) ?? null; } catch { /* sem Wake Lock: a tela pode apagar */ }
 
   screen.width = Math.round(screen.clientWidth * devicePixelRatio);
