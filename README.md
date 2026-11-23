@@ -86,7 +86,7 @@ O nome técnico da área é **comunicação por luz visível** (VLC). O Photon �
 
 ```sh
 npm install
-npm run dev     # https local (o Safari do iPhone exige https para a câmera)
+npm run dev     # https local (navegadores só liberam a câmera em https, fora do localhost)
 npm test        # testes com câmera simulada (Node 24)
 npm run build
 ```
