@@ -168,7 +168,8 @@ export function mountReceive(root: HTMLElement, auto = false) {
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
     }
   }
-  setInterval(() => {
+  // só no servidor de desenvolvimento: o build publicado não envia NADA para servidor nenhum (o Vite remove este bloco)
+  if (import.meta.env.DEV) setInterval(() => {
     if (!go.hidden || log.count === synced) return;
     synced = log.count;
     upload(log.files(reportLines().slice(0, 9))).catch(() => { /* sem servidor de dev */ });
