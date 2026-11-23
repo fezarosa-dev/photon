@@ -39,6 +39,31 @@ Cada quadro tem quatro marcadores nos cantos (para achar e endireitar a imagem),
 
 As decisões de projeto e as medições estão em [`docs/decisions/0001-canal-optico.md`](docs/decisions/0001-canal-optico.md).
 
+## O que aprendemos
+
+O Photon também foi um estudo de **como os dados viajam**. No fundo, ele é um pequeno sistema de telecomunicações, com as mesmas peças da internet, do Wi-Fi e do 4G. Só o meio muda: luz de tela entrando numa câmera.
+
+**Digital × analógico.** O arquivo é digital: uma sequência exata de 0s e 1s. O meio físico é sempre analógico: luz, tensão e ondas de rádio são contínuas, com ruído e borrão. Toda comunicação digital resolve o mesmo problema, que é levar valores exatos por um meio impreciso usando poucos níveis bem separados. No Photon, cada cor é um nível. A câmera mede um tom meio borrado e o receptor decide qual cor aquilo provavelmente era. Por isso o arquivo chega idêntico mesmo com a imagem tremida.
+
+**Do "liga e desliga" a vários níveis.** O mais simples é luz ligada = 1 e desligada = 0, como na fibra óptica básica. Wi-Fi e 4G levam vários bits por símbolo, combinando amplitude e fase da onda. O Photon faz o mesmo com cores: 4 cores = 2 bits por quadradinho, 8 cores = 3 bits. Os testes mostraram o limite disso na prática: com 16 cores, o erro dispara. É a lei de Shannon, segundo a qual o ruído do canal limita quanta informação cabe nele.
+
+**As mesmas peças:**
+
+| Na internet / Wi-Fi / 4G | No Photon |
+|---|---|
+| Compressão | deflate, quando o arquivo encolhe |
+| Modulação (bits → onda) | bits → cores das células |
+| Preâmbulo e sincronismo | marcadores dos cantos + cabeçalho |
+| Estimativa de canal (sinais-piloto) | réguas de cor e ajuste local de cor |
+| Correção de erros (LDPC no Wi-Fi 6 e no 5G) | o mesmo LDPC, com decisão suave |
+| Detecção de erros (CRC dos pacotes) | CRC32 em cada bloco |
+| Entrelaçamento | bits espalhados pelo quadro |
+| Integridade | SHA-256 do arquivo inteiro |
+
+**TCP × UDP.** O TCP garante a entrega pedindo reenvio do que se perdeu, e para isso precisa de um canal de volta. O UDP manda e esquece. Como o UDP, o Photon fala numa direção só, sem confirmação. Para não perder nada, ele soma **correção de erros antecipada** (fountain code), como em transmissões multicast e na TV digital. Na calibração, quem faz o papel de canal de volta é você, ao escolher o nível indicado.
+
+O nome técnico da área é **comunicação por luz visível** (VLC). O Photon é um VLC de tela para câmera: parente do QR Code, só que contínuo e com correção de erros de nível 5G.
+
 ## Desenvolvimento
 
 ```sh
