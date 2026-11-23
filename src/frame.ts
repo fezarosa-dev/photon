@@ -35,8 +35,8 @@ type RGB = [number, number, number];
 const PAL4: RGB[] = [[255, 255, 255], [255, 0, 0], [0, 255, 0], [0, 0, 255]];
 const PAL8: RGB[] = [];
 for (const r of [0, 255]) for (const g of [0, 255]) for (const b of [0, 255]) PAL8.push([r, g, b]);
-const PAL16: RGB[] = []; // verde com 4 níveis: canal mais sensível da câmera
-for (const r of [0, 255]) for (const g of [0, 85, 170, 255]) for (const b of [0, 255]) PAL16.push([r, g, b]);
+const PAL16: RGB[] = []; // verde com 4 níveis (canal mais sensível da câmera), em ordem Gray
+for (const r of [0, 255]) for (const g of [0, 85, 255, 170]) for (const b of [0, 255]) PAL16.push([r, g, b]);
 const PALETTES: Record<number, RGB[]> = { 4: PAL4, 8: PAL8, 16: PAL16 };
 
 export interface Config { cell: number; colors: number }
@@ -51,7 +51,13 @@ export function grid(c: Config) {
     y0: CELL_Y0 + Math.floor((CELL_Y1 - CELL_Y0 - rows * c.cell) / 2),
   };
 }
-const bitsOf = (c: Config) => Math.log2(c.colors);
+export const bitsOf = (c: Config) => Math.log2(c.colors);
+
+/** Vazão bruta (KB/s) de um nível, sem descontar paridade. */
+export function rawKbps(c: Config, fps: number) {
+  const g = grid(c);
+  return (g.cols * g.rows * bitsOf(c)) / 8 / 1024 * fps;
+}
 
 /** Vazão útil estimada (KB/s) de um nível, descontada a paridade. */
 export function kbps(c: Config, fps: number) {
@@ -64,13 +70,18 @@ export function kbps(c: Config, fps: number) {
 export interface Header {
   type: number; config: number; fps: number; session: number; frame: number;
   size: number; sha: Uint8Array; name: string;
+  rate?: number;  // dados: taxa do LDPC (k/n); 0 nos quadros de calibração/teste
+  flags?: number; // dados: FLAG_DEFLATE se o conteúdo foi comprimido
+  plen?: number;  // dados: tamanho do conteúdo transmitido (após compressão)
 }
 export const TYPE_CALIB = 1;
 export const TYPE_TEST = 2; // varredura automática (/teste): fps e nível mudam a cada bloco
 export const TEST_FPS = [30, 20, 15]; // imagens/s varridas no teste
-const HEADER_BYTES = 79;
+export const TYPE_DATA = 3;
+export const FLAG_DEFLATE = 1;
+const HEADER_BYTES = 85;
 const NAME_MAX = 20;
-const VERSION = 1;
+const VERSION = 2;
 
 const CRC_TABLE = new Uint32Array(256).map((_, n) => {
   let c = n;
@@ -113,19 +124,23 @@ function packHeader(h: Header): Uint8Array {
   const name = utf8Prefix(h.name, NAME_MAX);
   b[54] = name.length;
   b.set(name, 55);
-  dv.setUint32(75, crc32(b.subarray(0, 75)));
+  b[75] = Math.round((h.rate ?? 0) * 200);
+  b[76] = h.flags ?? 0;
+  dv.setUint32(77, h.plen ?? 0);
+  dv.setUint32(81, crc32(b.subarray(0, 81)));
   return b;
 }
 
 function unpackHeader(b: Uint8Array): Header | null {
   const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
   if (b[0] !== 0x51 || b[1] !== 0x46 || b[2] !== VERSION) return null;
-  if (dv.getUint32(75) !== crc32(b.subarray(0, 75))) return null;
+  if (dv.getUint32(81) !== crc32(b.subarray(0, 81))) return null;
   if (b[4] >= CONFIGS.length) return null;
   return {
     type: b[3], config: b[4], fps: b[5], session: dv.getUint32(6), frame: dv.getUint32(10),
     size: Number(dv.getBigUint64(14)), sha: b.slice(22, 54),
     name: new TextDecoder().decode(b.subarray(55, 55 + Math.min(b[54], NAME_MAX))),
+    rate: b[75] / 200, flags: b[76], plen: dv.getUint32(77),
   };
 }
 
@@ -161,8 +176,8 @@ export const hex = (b: Uint8Array) => [...b].map((x) => x.toString(16).padStart(
 const pack = ([r, g, b]: RGB) => (0xff000000 | (b << 16) | (g << 8) | r) >>> 0; // RGBA little-endian
 const WHITE = pack([255, 255, 255]), BLACK = pack([0, 0, 0]);
 
-/** Desenha o quadro de calibração em px (FW×FH, RGBA em Uint32 little-endian). */
-export function render(px: Uint32Array, h: Header) {
+/** Desenha o quadro em px (FW×FH, RGBA em Uint32 little-endian). Sem `syms`, usa o padrão de teste conhecido. */
+export function render(px: Uint32Array, h: Header, syms?: Uint8Array) {
   const c = CONFIGS[h.config], pal = PALETTES[c.colors].map(pack);
   const rect = (x: number, y: number, w: number, hh: number, v: number) => {
     for (let j = y; j < y + hh; j++) px.fill(v, j * FW + x, j * FW + x + w);
@@ -183,7 +198,7 @@ export function render(px: Uint32Array, h: Header) {
   for (const y of [PAL_TOP_Y, PAL_BOT_Y]) {
     for (let k = 0; k < FW / MOD; k++) rect(k * MOD, y, MOD, MOD, pal[k % pal.length]);
   }
-  const g = grid(c), s = symbols(h, c);
+  const g = grid(c), s = syms ?? symbols(h, c);
   for (let j = 0; j < g.rows; j++) {
     for (let i = 0; i < g.cols; i++) rect(g.x0 + i * c.cell, g.y0 + j * c.cell, c.cell, c.cell, pal[s[j * g.cols + i]]);
   }
@@ -219,9 +234,9 @@ function readHeader(img: Img, H: Mat, y0: number): Header | null {
 const OFFS4 = [[-1, -1], [1, -1], [-1, 1], [1, 1]];
 const OFFS5 = [[0, 0], [-1, 0], [1, 0], [0, -1], [0, 1]];
 
-/** Classifica cada célula pela régua de cores do próprio quadro e conta erros contra o padrão conhecido. */
-function measure(img: Img, H: Mat, h: Header) {
-  const cfg = CONFIGS[h.config], n = cfg.colors, g = grid(cfg), expect = symbols(h, cfg), c = [0, 0, 0];
+/** Cor de cada célula e classificação: régua do próprio quadro + refinamento local de cor. */
+function classify(img: Img, H: Mat, cfg: Config) {
+  const n = cfg.colors, g = grid(cfg), c = [0, 0, 0];
 
   // centróides por (régua topo/base) × faixa horizontal × cor
   const cent = new Float32Array(2 * BINS * n * 3), cnt = new Float32Array(2 * BINS * n);
@@ -302,18 +317,54 @@ function measure(img: Img, H: Mat, h: Header) {
     }
   }
 
+  return { n, N, col, lab, bc, cellBlock };
+}
+type Classified = ReturnType<typeof classify>;
+
+/** Calibração/teste: conta erros contra o padrão conhecido. */
+function measure(cls: Classified, h: Header) {
+  const expect = symbols(h, CONFIGS[h.config]);
   let errors = 0;
-  const wrong = new Uint8Array(N); // mapa de erros (diagnóstico)
-  for (let k = 0; k < N; k++) if (lab[k] !== expect[k]) { errors++; wrong[k] = 1; }
-  return { errors, cells: g.rows * g.cols, wrong };
+  const wrong = new Uint8Array(cls.N); // mapa de erros (diagnóstico)
+  for (let k = 0; k < cls.N; k++) if (cls.lab[k] !== expect[k]) { errors++; wrong[k] = 1; }
+  return { errors, cells: cls.N, wrong };
+}
+
+const LLR_MAX = 20;
+
+/**
+ * Dados: LLR por bit (positivo = bit 0 mais provável), max-log sobre as distâncias aos centróides locais.
+ * Bit t da célula = bit (b-1-t) do símbolo; ruído estimado pela distância média ao centróide escolhido.
+ */
+function softBits(cls: Classified) {
+  const { n, N, col, lab, bc, cellBlock } = cls, b = Math.log2(n), d = new Float32Array(n);
+  let s2 = 0;
+  for (let cell = 0; cell < N; cell++) {
+    const o = (cellBlock[cell] * n + lab[cell]) * 3;
+    s2 += (col[cell * 3] - bc[o]) ** 2 + (col[cell * 3 + 1] - bc[o + 1]) ** 2 + (col[cell * 3 + 2] - bc[o + 2]) ** 2;
+  }
+  const k = 1 / (2 * Math.max(s2 / (3 * N), 1)), llr = new Float32Array(N * b);
+  for (let cell = 0; cell < N; cell++) {
+    const base = cellBlock[cell] * n * 3, r = col[cell * 3], g = col[cell * 3 + 1], bl = col[cell * 3 + 2];
+    for (let s = 0; s < n; s++) { const o = base + s * 3; d[s] = (r - bc[o]) ** 2 + (g - bc[o + 1]) ** 2 + (bl - bc[o + 2]) ** 2; }
+    for (let t = 0; t < b; t++) {
+      const mask = 1 << (b - 1 - t);
+      let d0 = Infinity, d1 = Infinity;
+      for (let s = 0; s < n; s++) if (s & mask) { if (d[s] < d1) d1 = d[s]; } else if (d[s] < d0) d0 = d[s];
+      llr[cell * b + t] = Math.max(-LLR_MAX, Math.min(LLR_MAX, (d1 - d0) * k));
+    }
+  }
+  return llr;
 }
 
 export type Status = 'sem-marcadores' | 'sem-cabecalho' | 'misturado' | 'ok';
 export interface Decoded {
   status: Status; anchors: Pt[] | null; header?: Header; errors?: number; cells?: number; wrong?: Uint8Array;
+  llr?: Float32Array; // quadros de dados: bits suaves, na ordem das células
 }
 
-export function decodeFrame(img: Img): Decoded {
+/** wantData: decide se vale ler as células de um quadro de dados (ex.: pular quadro já aproveitado). */
+export function decodeFrame(img: Img, wantData: (h: Header) => boolean = () => true): Decoded {
   const anchors = findAnchors(img);
   if (!anchors) return { status: 'sem-marcadores', anchors: null };
   for (let r = 0; r < 4; r++) { // orientação desconhecida: tenta as 4 rotações, o CRC decide
@@ -323,7 +374,10 @@ export function decodeFrame(img: Img): Decoded {
     const bot = readHeader(img, H, HDR_BOT_Y);
     // topo e base com quadros diferentes = câmera filmou a troca de imagem
     if (!bot || bot.frame !== top.frame || bot.session !== top.session) return { status: 'misturado', anchors, header: top };
-    return { status: 'ok', anchors, header: top, ...measure(img, H, top) };
+    if (top.type === TYPE_DATA) {
+      return { status: 'ok', anchors, header: top, llr: wantData(top) ? softBits(classify(img, H, CONFIGS[top.config])) : undefined };
+    }
+    return { status: 'ok', anchors, header: top, ...measure(classify(img, H, CONFIGS[top.config]), top) };
   }
   return { status: 'sem-cabecalho', anchors };
 }

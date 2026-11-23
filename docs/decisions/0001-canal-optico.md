@@ -82,3 +82,13 @@ Conclusões:
 - **8 cores com paridade mais forte (~25–35%) superam 4 cores.** 16 cores não compensam.
 - Para a fase 2: o padrão passa a ser 20 imagens/s e a paridade passa a ser escolhida pelo erro medido na calibração, em vez de ficar fixa em 30%.
 - O fps da câmera varia entre sessões (36 a 57 fps). A calibração precisa medir sempre.
+
+## Fase 2: primeira transferência real (2026-11-23)
+
+- **foto-teste.png (9.968.098 B) foi do PC para o iPhone só pela luz, com o SHA-256 conferido.** Monitor do meio,
+  nível 11 (5 px, 8 cores), 20 imagens/s, escala ~0,93: **119 s, ou 82 KB/s reais**.
+- O LDPC corrigiu 99,7% das palavras (10.463/10.494). O canal óptico comporta mais de 200 KB/s (~14 KB por imagem × 20/s).
+- **O gargalo é o processamento no iPhone:** ~10 imagens/s numa thread só, o que aproveita só 40% das imagens mostradas.
+  Próximo passo: um pool de Web Workers para ler e decodificar em paralelo.
+- Fountain: só pacotes de reparo (id ≥ k). O modo sistemático exigia ~37% a mais de pacotes com perdas, contra 6–15% no reparo puro.
+- A paridade é escolhida pela calibração (`pickRate`), a partir dos limites medidos do LDPC com folga de 0,7.

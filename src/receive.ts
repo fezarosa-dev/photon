@@ -1,5 +1,6 @@
 // Tela do celular: filma, lê cada quadro e mede o erro por nível até declarar "Calibrado".
-import { ANCHOR_CENTERS, CONFIGS, TYPE_TEST, decodeFrame, hex, kbps, type Header, type Status } from './frame.ts';
+import { ANCHOR_CENTERS, CONFIGS, FLAG_DEFLATE, bitsOf, rawKbps, TYPE_DATA, TYPE_TEST, decodeFrame, hex, kbps, type Header, type Status } from './frame.ts';
+import { inflate, makePlan, makeReceiver, pickRate } from './transfer.ts';
 import { createLog } from './log.ts';
 import type { Pt } from './detect.ts';
 
@@ -24,6 +25,7 @@ export function mountReceive(root: HTMLElement, auto = false) {
       <p id="verdict" class="verdict" role="status"></p></div>
     <p><button id="csv">📊 Enviar planilha</button> <button id="dbg">📋 Gerar relatório</button><br>
       <small id="sync">As planilhas vão sozinhas para o PC a cada 10 s.</small></p>
+    <p><button id="save" hidden>💾 Salvar arquivo</button></p>
     <p id="meta" class="mono"></p>
     <p id="stat" class="mono"></p>
     <table id="tbl"></table>`;
@@ -32,6 +34,44 @@ export function mountReceive(root: HTMLElement, auto = false) {
   const verdict = $('verdict'), meta = $('meta'), stat = $('stat'), tbl = $('tbl'), dbg = $<HTMLButtonElement>('dbg');
   const csvBtn = $<HTMLButtonElement>('csv'), syncInfo = $('sync');
   const log = createLog();
+  const save = $<HTMLButtonElement>('save');
+
+  // ---- recepção de arquivo (quadros de dados) ----
+  type Rx = { key: string; h: Header; rx: ReturnType<typeof makeReceiver>; done: Set<number>; tries: Map<number, number>; t0: number; result?: string };
+  let rx: Rx | null = null;
+  const MAX_TRIES = 3; // releituras do mesmo quadro (a câmera costuma pegar cada imagem 2×) se alguma palavra falhou
+  const wantData = (h: Header) => !rx || rx.key !== rxKey(h) || (!rx.rx.done && !rx.done.has(h.frame) && (rx.tries.get(h.frame) ?? 0) < MAX_TRIES);
+  const rxKey = (h: Header) => `${h.session}|${h.config}|${h.rate}|${h.plen}`;
+
+  async function finish(r: Rx) {
+    let bytes = r.rx.result();
+    if (r.h.flags! & FLAG_DEFLATE) bytes = await inflate(bytes);
+    const sha = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes as BufferSource));
+    const ok = hex(sha) === hex(r.h.sha);
+    const secs = (performance.now() - r.t0) / 1000;
+    r.result = ok ? `✅ Arquivo íntegro\n${(bytes.length / 1024 / secs).toFixed(0)} KB/s · ${secs.toFixed(0)} s` : '❌ SHA-256 não confere';
+    if (!ok) return;
+    const file = new File([bytes as BlobPart], r.h.name || 'arquivo', { type: 'application/octet-stream' });
+    save.hidden = false;
+    save.onclick = async () => { // só no aparelho: nada volta ao PC
+      if (navigator.canShare?.({ files: [file] })) { await navigator.share({ files: [file] }).catch(() => {}); return; }
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(file); a.download = file.name; a.click();
+    };
+  }
+
+  function onData(h: Header, llr: Float32Array | undefined): string {
+    if (!rx || rx.key !== rxKey(h)) {
+      rx = { key: rxKey(h), h, rx: makeReceiver(h.plen!, makePlan(h.config, h.rate!)), done: new Set(), tries: new Map(), t0: performance.now() };
+      save.hidden = true;
+    }
+    if (!llr || rx.rx.done) return '';
+    const r = rx, ok = r.rx.add(llr);
+    r.tries.set(h.frame, (r.tries.get(h.frame) ?? 0) + 1);
+    if (ok === makePlan(h.config, h.rate!).m) r.done.add(h.frame);
+    if (r.rx.done) finish(r);
+    return `${ok}/${makePlan(h.config, h.rate!).m}`;
+  }
   let synced = -1;
 
   const work = document.createElement('canvas');
@@ -138,7 +178,8 @@ export function mountReceive(root: HTMLElement, auto = false) {
     if (w && h) {
       if (work.width !== w || work.height !== h) { work.width = w; work.height = h; }
       wctx.drawImage(video, 0, 0);
-      const img = wctx.getImageData(0, 0, w, h), res = decodeFrame(img);
+      const img = wctx.getImageData(0, 0, w, h), res = decodeFrame(img, wantData);
+      const ldpc = res.status === 'ok' && res.header?.type === TYPE_DATA ? onData(res.header, res.llr) : '';
       if (res.status === 'sem-cabecalho') lastFail = img;
       else if (res.status === 'ok') lastOk = img;
       procFrames++;
@@ -146,7 +187,7 @@ export function mountReceive(root: HTMLElement, auto = false) {
       if (res.status === 'ok' || res.status === 'misturado') lastSeen = now;
       const inst = res.anchors ? perimeterRatio(res.anchors) : 0;
       if (res.anchors) scale = 0.8 * scale + 0.2 * inst;
-      log.add(res, inst, camFps, procFps);
+      log.add(res, inst, camFps, procFps, ldpc);
       count[res.status]++;
       if (res.status === 'ok' && res.header) {
         const test = res.header.type === TYPE_TEST; // no teste o fps muda de propósito a cada bloco
@@ -159,7 +200,7 @@ export function mountReceive(root: HTMLElement, auto = false) {
           while (seenFrames[0] <= f - USE_WINDOW) seenFrames.shift();
         }
         const s = stats[res.header.config];
-        s.frames++; s.cells += res.cells!; s.errors += res.errors!;
+        if (res.errors !== undefined) { s.frames++; s.cells += res.cells!; s.errors += res.errors; } // dados não têm erro medido
       }
       overlay(res.anchors, w, res.status === 'ok');
     }
@@ -192,18 +233,28 @@ export function mountReceive(root: HTMLElement, auto = false) {
       ? `Arquivo: ${header.name} · ${header.size.toLocaleString('pt-BR')} bytes · SHA-256 ${hex(header.sha)}`
       : 'Aguardando cabeçalho…';
 
-    let best = -1;
+    let best = -1, bestNet = 0;
+    const FOUNTAIN = 0.93; // ~7% de pacotes a mais no fountain (medido)
     const rows = CONFIGS.map((c, i) => {
-      const s = stats[i], err = s.cells ? s.errors / s.cells : NaN, rate = kbps(c, fps);
-      if (s.frames >= MIN_FRAMES && err <= MAX_ERR && (best < 0 || rate > kbps(CONFIGS[best], fps))) best = i;
+      const s = stats[i], err = s.cells ? s.errors / s.cells : NaN, R = s.frames >= MIN_FRAMES ? pickRate(err, bitsOf(c)) : 0;
+      const net = rawKbps(c, fps) * R * FOUNTAIN * (use || 1);
+      if (R && net > bestNet) { best = i; bestNet = net; }
       return `<tr><td>${i + 1}</td><td>${c.cell}px</td><td>${c.colors}</td><td>${s.frames}</td>`
-        + `<td>${Number.isNaN(err) ? '–' : (100 * err).toFixed(2) + '%'}</td><td>${rate.toFixed(0)}</td></tr>`;
+        + `<td>${Number.isNaN(err) ? '–' : (100 * err).toFixed(2) + '%'}</td><td>${R ? Math.round((1 - R) * 100) + '%' : '–'}</td><td>${R ? net.toFixed(0) : '–'}</td></tr>`;
     });
-    tbl.innerHTML = '<tr><th>Nível</th><th>Célula</th><th>Cores</th><th>Leituras</th><th>Erro</th><th>KB/s est.</th></tr>' + rows.join('');
+    tbl.innerHTML = '<tr><th>Nível</th><th>Célula</th><th>Cores</th><th>Leituras</th><th>Erro</th><th>Paridade</th><th>KB/s líq.</th></tr>' + rows.join('');
 
     const done = header && stats.every((s) => s.frames >= MIN_FRAMES);
     const hint = lastStatus === 'sem-marcadores' || lastStatus === 'sem-cabecalho' ? '\nenquadre os 4 cantos'
       : scale < 0.8 ? `\nescala ${scale.toFixed(2)}×: aproxime` : `\nescala ${scale.toFixed(2)}× ✓`;
+    if (rx && header?.type === TYPE_DATA) {
+      const r = rx, s = r.rx.stats, secs = (now - r.t0) / 1000, p = r.rx.progress;
+      const rate = r.rx.usefulBytes / 1024 / Math.max(secs, 0.1), left = p > 0 ? (secs * (1 - p)) / p : Infinity;
+      verdict.textContent = r.result ?? `📥 ${(100 * r.rx.progress).toFixed(0)}% · ${rate.toFixed(0)} KB/s\nfaltam ${Number.isFinite(left) ? Math.ceil(left) + ' s' : '…'}`;
+      verdict.className = 'verdict big' + (r.result?.startsWith('✅') ? ' done' : r.result ? ' warn' : '');
+      meta.textContent = `Recebendo ${r.h.name} · ${r.h.size.toLocaleString('pt-BR')} bytes · palavras ok ${s.wordsOk}/${s.words} · CRC falhou ${s.crcFail} · pacotes ${s.received}/${r.rx.k} · recuperados ${s.recovered}`;
+      return;
+    }
     if (header?.type === TYPE_TEST) {
       const c = CONFIGS[header.config];
       const lost = now - lastSeen > LOST_MS; // um quadro ruim isolado não muda a instrução
@@ -214,7 +265,7 @@ export function mountReceive(root: HTMLElement, auto = false) {
     }
     verdict.textContent = !done ? 'Calibrando…' + hint
       : best < 0 ? 'Calibrado: nenhum nível com erro aceitável. Aproxime, reduza o reflexo ou baixe as imagens/s no PC.'
-      : `✅ Calibrado: use o nível ${best + 1} no PC\n~${kbps(CONFIGS[best], fps).toFixed(0)} KB/s teórico · ~${(kbps(CONFIGS[best], fps) * use).toFixed(0)} KB/s real`;
+      : `✅ No PC: nível ${best + 1} · paridade ${Math.round((1 - pickRate(stats[best].errors / stats[best].cells, bitsOf(CONFIGS[best]))) * 100)}%\n~${bestNet.toFixed(0)} KB/s líquidos`;
     verdict.className = 'verdict' + (!done ? '' : best < 0 ? ' warn' : ' done');
   }
 }

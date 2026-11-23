@@ -40,13 +40,13 @@ export function createLog() {
     blk = null;
   };
 
-  function add(res: Decoded, scale: number, cam: number, proc: number) {
+  function add(res: Decoded, scale: number, cam: number, proc: number, ldpc = '') {
     const h = res.header;
     if (raw.length < MAX_RAW) {
       raw.push([Math.round(performance.now() - t0), res.status, h?.frame ?? '', h?.fps ?? '', h ? h.config + 1 : '',
-        res.anchors ? scale.toFixed(3) : '', res.errors ?? '', res.cells ?? '', cam.toFixed(0), proc.toFixed(0)]);
+        res.anchors ? scale.toFixed(3) : '', res.errors ?? '', res.cells ?? '', cam.toFixed(0), proc.toFixed(0), ldpc]);
     }
-    if (!h || (res.status !== 'ok' && res.status !== 'misturado')) return;
+    if (!h || (res.status !== 'ok' && res.status !== 'misturado') || (res.status === 'ok' && res.errors === undefined)) return; // dados: só no bruto
     const r = row(h.fps, h.config, bucket(scale));
     if (res.status === 'misturado') { r.mixed++; return; }
     r.reads++; r.errors += res.errors!; r.cells += res.cells!; r.cam += cam; r.proc += proc;
@@ -80,7 +80,7 @@ export function createLog() {
           r.reads ? (r.cam / r.reads).toFixed(0) : '', r.reads ? (r.proc / r.reads).toFixed(0) : ''];
       }),
     ];
-    const head = ['t_ms', 'status', 'quadro', 'fps_emissor', 'nivel', 'escala', 'erros', 'celulas', 'cam_fps', 'proc_fps'];
+    const head = ['t_ms', 'status', 'quadro', 'fps_emissor', 'nivel', 'escala', 'erros', 'celulas', 'cam_fps', 'proc_fps', 'ldpc_ok'];
     const metaCsv = meta.map((m) => '# ' + m.replace(/\n/g, ' ')).join('\n') + '\n';
     return [
       new File([metaCsv + csv(summary)], `qrfi-resumo-${stamp}.csv`, { type: 'text/csv' }),

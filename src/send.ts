@@ -1,11 +1,13 @@
 // Tela do PC: calibração (arquivo escolhido) ou teste automático (/teste) em tela cheia.
-import { CONFIGS, FH, FW, TEST_FPS, TYPE_CALIB, TYPE_TEST, hex, kbps, render } from './frame.ts';
+import { CONFIGS, FH, FW, FLAG_DEFLATE, TEST_FPS, TYPE_CALIB, TYPE_DATA, TYPE_TEST, hex, kbps, render } from './frame.ts';
+import { RATES, makePlan, makeSender, maybeDeflate } from './transfer.ts';
 
 const FRAMES_PER_CONFIG = 6;   // calibração: imagens seguidas por nível
 const TEST_BLOCK = 20;         // teste: imagens por bloco (mesmo fps e nível); ciclo ~36 s
 
-type Meta = { name: string; size: number; sha: Uint8Array };
+type Meta = { name: string; size: number; sha: Uint8Array; rate?: number; flags?: number; plen?: number };
 type Pick = (frame: number) => { config: number; fps: number };
+type Content = (frame: number) => Uint8Array;
 
 const SCREEN = '<canvas id="screen"></canvas>';
 const newSession = () => crypto.getRandomValues(new Uint32Array(1))[0];
@@ -25,21 +27,41 @@ export function mountSend(root: HTMLElement) {
     </label></p>
     <p><button id="calib" disabled>Calibrar (tela cheia)</button></p>
     <p><label>Nível <select id="level"></select></label>
-      <button id="start" disabled title="Chega na fase 2">Iniciar transferência (fase 2)</button></p>
+      <label>Paridade <select id="rate">${RATES.map((r) => `<option value="${r}"${r === 0.75 ? ' selected' : ''}>${Math.round((1 - r) * 100)}%</option>`).join('')}</select></label></p>
+    <p><button id="start" disabled>Iniciar transferência (tela cheia)</button> <span id="plan" class="mono"></span></p>
     ${SCREEN}`;
   const $ = <T extends HTMLElement>(id: string) => root.querySelector<T>('#' + id)!;
   const fileIn = $<HTMLInputElement>('file'), info = $('info'), fpsSel = $<HTMLSelectElement>('fps');
   const calib = $<HTMLButtonElement>('calib'), level = $<HTMLSelectElement>('level'), screen = $<HTMLCanvasElement>('screen');
+  const rateSel = $<HTMLSelectElement>('rate'), start = $<HTMLButtonElement>('start'), planInfo = $('plan');
 
   const fillLevels = () => {
     const fps = Number(fpsSel.value);
     level.innerHTML = CONFIGS.map((c, i) =>
       `<option value="${i}">${i + 1}: célula ${c.cell}px, ${c.colors} cores, ~${kbps(c, fps).toFixed(0)} KB/s</option>`).join('');
   };
-  fpsSel.onchange = fillLevels;
   fillLevels();
 
-  let file: Meta | null = null, session = 0;
+  let file: Meta | null = null, bytes: Uint8Array | null = null, session = 0;
+  let ready: { meta: Meta; content: Content; config: number } | null = null;
+
+  // prepara a transferência fora do clique (comprimir + montar o LDPC custa); o clique só abre a tela cheia
+  async function prepare() {
+    ready = null;
+    start.disabled = true;
+    if (!file || !bytes) return;
+    const config = Number(level.value), rate = Number(rateSel.value);
+    planInfo.textContent = 'preparando…';
+    const { bytes: payload, deflated } = await maybeDeflate(bytes);
+    const plan = makePlan(config, rate), sender = makeSender(payload, plan);
+    ready = { config, content: (f) => sender.symbols(f), meta: { ...file, rate, flags: deflated ? FLAG_DEFLATE : 0, plen: payload.length } };
+    const perFrame = plan.m * plan.packetSize, fps = Number(fpsSel.value);
+    planInfo.textContent = `${sender.k} pacotes de ${plan.packetSize} B${deflated ? ` · comprimido ${Math.round((100 * payload.length) / bytes.length)}%` : ''}`
+      + ` · ${(perFrame / 1024).toFixed(1)} KB/imagem · ~${Math.ceil((payload.length * 1.08) / perFrame / fps)} s sem perdas`;
+    start.disabled = false;
+  }
+  fpsSel.onchange = () => { fillLevels(); prepare(); };
+  level.onchange = rateSel.onchange = prepare;
   fileIn.onchange = async () => {
     const f = fileIn.files?.[0];
     if (!f) return;
@@ -47,15 +69,22 @@ export function mountSend(root: HTMLElement) {
     calib.disabled = true;
     info.textContent = 'Calculando SHA-256…';
     const sha = new Uint8Array(await crypto.subtle.digest('SHA-256', await f.arrayBuffer()));
+    bytes = new Uint8Array(await f.arrayBuffer());
     file = { name: f.name, size: f.size, sha };
     session = newSession();
     info.textContent = `${f.name} · ${f.size.toLocaleString('pt-BR')} bytes · SHA-256 ${hex(sha)}`;
     calib.disabled = false;
+    prepare();
   };
 
   calib.onclick = () => {
     const fps = Number(fpsSel.value);
     play(screen, file!, session, TYPE_CALIB, (f) => ({ config: Math.floor(f / FRAMES_PER_CONFIG) % CONFIGS.length, fps }));
+  };
+  start.onclick = () => {
+    if (!ready) return;
+    const { meta, content, config } = ready, fps = Number(fpsSel.value);
+    play(screen, meta, session, TYPE_DATA, () => ({ config, fps }), content);
   };
 }
 
@@ -84,7 +113,7 @@ export function mountTest(root: HTMLElement) {
 
 let running = false;
 
-async function play(screen: HTMLCanvasElement, meta: Meta, session: number, type: number, pick: Pick) {
+async function play(screen: HTMLCanvasElement, meta: Meta, session: number, type: number, pick: Pick, content?: Content) {
   screen.style.display = 'block';
   try { await screen.requestFullscreen(); } catch { screen.style.display = 'none'; return; }
   document.onfullscreenchange = () => {
@@ -109,7 +138,7 @@ async function play(screen: HTMLCanvasElement, meta: Meta, session: number, type
     const { config, fps } = pick(frame);
     if (now - last >= 1000 / fps - 4) { // troca a cada N vsyncs, sem depender da taxa do monitor
       last = now;
-      render(px, { type, config, fps, session, frame, ...meta });
+      render(px, { type, config, fps, session, frame, ...meta }, content?.(frame));
       octx.putImageData(img, 0, 0);
       ctx.fillStyle = '#000';
       ctx.fillRect(0, 0, screen.width, screen.height);
