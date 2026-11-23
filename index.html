@@ -2,28 +2,11 @@
 <html lang="pt-BR">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#000000">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <title>qrFI</title>
-  <style>
-    :root { color-scheme: dark; }
-    body { margin: 0; padding: 16px; background: #111; color: #eee; font: 16px/1.5 system-ui, sans-serif; }
-    main { max-width: 900px; margin: auto; }
-    button, select, .btn { font: inherit; padding: 8px 14px; border-radius: 8px; border: 1px solid #555; background: #222; color: #eee; text-decoration: none; display: inline-block; }
-    button:disabled { opacity: .5; }
-    .mono { font-family: ui-monospace, monospace; font-size: 13px; word-break: break-all; }
-    .verdict { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 10; margin: 0; width: max-content; max-width: 88%;
-      padding: 12px 18px; border-radius: 14px; font-size: 22px; font-weight: 700; text-align: center; background: #000b; color: #fff; white-space: pre-line; }
-    .verdict:empty { display: none; }
-    .verdict.done { background: #1e8e3ee6; font-size: 28px; }
-    .verdict.warn { background: #b26a00e6; }
-    .verdict.big { font-size: 34px; line-height: 1.25; }
-    .view { position: relative; }
-    .view video { width: 100%; display: block; }
-    #ov { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
-    table { border-collapse: collapse; font-size: 14px; }
-    td, th { padding: 4px 10px; border-bottom: 1px solid #333; text-align: right; }
-    #screen { display: none; width: 100vw; height: 100vh; background: #000; cursor: none; }
-  </style>
 </head>
 <body>
   <main id="app"></main>

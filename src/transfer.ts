@@ -1,6 +1,6 @@
 // Transferência: arquivo → pacotes fountain → palavras LDPC (com id + CRC) → bits espalhados no quadro → cores.
 // O receptor faz o caminho inverso a partir dos bits suaves (LLR) de cada quadro.
-import { CONFIGS, bitsOf, crc32, grid, rng, type Config } from './frame.ts';
+import { CONFIGS, bitsOf, crc32, grid, rng, type Config, type Header } from './frame.ts';
 import { makeLdpc, type Ldpc } from './ldpc.ts';
 import { ltDecoder, ltEncoder } from './fountain.ts';
 
@@ -82,29 +82,42 @@ export function makeSender(payload: Uint8Array, plan: Plan) {
   };
 }
 
-/** Receptor: alimenta com os LLRs de cada quadro; devolve o conteúdo quando o fountain completa. */
+/** Identifica uma recepção: mudar sessão, nível, taxa ou tamanho = outra transferência. */
+export const rxKey = (h: Header) => `${h.session}|${h.config}|${h.rate}|${h.plen}`;
+
+export interface Words { m: number; ok: number; crcFail: number; ids: number[]; payloads: Uint8Array[] }
+
+/** Sem estado (roda no worker): corrige as palavras LDPC de um quadro e devolve os pacotes com CRC válido. */
+export function decodeWords(plan: Plan, frameLlr: Float32Array): Words {
+  const llr = new Float32Array(plan.n), info = new Uint8Array(plan.k / 8), dv = new DataView(info.buffer);
+  const out: Words = { m: plan.m, ok: 0, crcFail: 0, ids: [], payloads: [] };
+  for (let j = 0; j < plan.m; j++) {
+    for (let t = 0; t < plan.n; t++) llr[t] = frameLlr[plan.perm[j * plan.n + t]];
+    const res = plan.ldpc.decode(llr);
+    if (!res.ok) continue;
+    toBytes(res.bits, info);
+    if (dv.getUint32(info.length - 4) !== crc32(info.subarray(0, info.length - 4))) { out.crcFail++; continue; }
+    out.ids.push(dv.getUint32(0));
+    out.payloads.push(info.slice(4, info.length - 4));
+    out.ok++;
+  }
+  return out;
+}
+
+/** Receptor (com estado, fica na thread principal): junta os pacotes no fountain até completar. */
 export function makeReceiver(plen: number, plan: Plan) {
   const k = Math.max(1, Math.ceil(plen / plan.packetSize)), dec = ltDecoder(k, plan.packetSize);
-  const llr = new Float32Array(plan.n), info = new Uint8Array(plan.k / 8), dv = new DataView(info.buffer);
   let words = 0, wordsOk = 0, crcFail = 0;
+  const addWords = (w: Words) => {
+    words += w.m; wordsOk += w.ok; crcFail += w.crcFail;
+    for (let i = 0; i < w.ids.length && !dec.done; i++) dec.add(w.ids[i], w.payloads[i]);
+    return w.ok;
+  };
   return {
     k,
-    /** Processa um quadro; retorna quantas palavras-código foram corrigidas com sucesso. */
-    add(frameLlr: Float32Array) {
-      let ok = 0;
-      for (let j = 0; j < plan.m && !dec.done; j++) {
-        for (let t = 0; t < plan.n; t++) llr[t] = frameLlr[plan.perm[j * plan.n + t]];
-        const res = plan.ldpc.decode(llr);
-        words++;
-        if (!res.ok) continue;
-        toBytes(res.bits, info);
-        if (dv.getUint32(info.length - 4) !== crc32(info.subarray(0, info.length - 4))) { crcFail++; continue; }
-        dec.add(dv.getUint32(0), info.slice(4, info.length - 4));
-        ok++;
-      }
-      wordsOk += ok;
-      return ok;
-    },
+    addWords,
+    /** Atalho (testes / thread única): corrige e junta um quadro. */
+    add: (frameLlr: Float32Array) => addWords(decodeWords(plan, frameLlr)),
     get done() { return dec.done; },
     // o fountain reconstrói quase tudo de uma vez no fim; progresso = pacotes bons recebidos ÷ ~necessários
     get progress() { return dec.done ? 1 : Math.min(0.99, dec.received / (k * FOUNTAIN_NEED)); },

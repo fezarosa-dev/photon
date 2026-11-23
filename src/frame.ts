@@ -219,6 +219,19 @@ function sample(img: Img, x: number, y: number, out: number[]) {
   }
 }
 
+/** Projeta (x,y) do quadro na imagem e soma w×RGB bilinear em out[o..o+2]. Sem alocação (laço quente). */
+function addSample(img: Img, H: Mat, x: number, y: number, w: number, out: Float32Array, o: number) {
+  const { data, width, height } = img, d = H[6] * x + H[7] * y + H[8];
+  const fx = Math.min(Math.max((H[0] * x + H[1] * y + H[2]) / d - 0.5, 0), width - 1.001);
+  const fy = Math.min(Math.max((H[3] * x + H[4] * y + H[5]) / d - 0.5, 0), height - 1.001);
+  const x0 = fx | 0, y0 = fy | 0, ax = fx - x0, ay = fy - y0;
+  const i00 = (y0 * width + x0) * 4, i10 = i00 + 4, i01 = i00 + width * 4, i11 = i01 + 4;
+  const w00 = (1 - ax) * (1 - ay) * w, w10 = ax * (1 - ay) * w, w01 = (1 - ax) * ay * w, w11 = ax * ay * w;
+  out[o] += data[i00] * w00 + data[i10] * w10 + data[i01] * w01 + data[i11] * w11;
+  out[o + 1] += data[i00 + 1] * w00 + data[i10 + 1] * w10 + data[i01 + 1] * w01 + data[i11 + 1] * w11;
+  out[o + 2] += data[i00 + 2] * w00 + data[i10 + 2] * w10 + data[i01 + 2] * w01 + data[i11 + 2] * w11;
+}
+
 function readHeader(img: Img, H: Mat, y0: number): Header | null {
   const lum = new Float32Array(HDR_CELLS), c = [0, 0, 0];
   let sum = 0;
@@ -245,12 +258,8 @@ function classify(img: Img, H: Mat, cfg: Config) {
     for (let k = 0; k < FW / MOD; k++) {
       const x = k * MOD + MOD / 2, bin = Math.min(BINS - 1, Math.floor((x * BINS) / FW));
       const o = (row * BINS + bin) * n + (k % n);
-      for (const [dx, dy] of OFFS4) {
-        const p = project(H, x + dx * MOD * 0.25, y + dy * MOD * 0.25);
-        sample(img, p.x, p.y, c);
-        cent[o * 3] += c[0]; cent[o * 3 + 1] += c[1]; cent[o * 3 + 2] += c[2];
-        cnt[o]++;
-      }
+      for (const [dx, dy] of OFFS4) addSample(img, H, x + dx * MOD * 0.25, y + dy * MOD * 0.25, 1, cent, o * 3);
+      cnt[o] += 4;
     }
   }
   for (let o = 0; o < cnt.length; o++) for (let k = 0; k < 3; k++) cent[o * 3 + k] /= cnt[o] || 1;
@@ -269,12 +278,12 @@ function classify(img: Img, H: Mat, cfg: Config) {
   for (let j = 0; j < g.rows; j++) {
     const y = g.y0 + (j + 0.5) * cfg.cell, t = tOf(j);
     for (let i = 0; i < g.cols; i++) {
-      const x = g.x0 + (i + 0.5) * cfg.cell, bin = binOf(i), o = (j * g.cols + i) * 3;
-      for (const [dx, dy] of OFFS5) {
-        const p = project(H, x + dx * cfg.cell * 0.2, y + dy * cfg.cell * 0.2);
-        sample(img, p.x, p.y, c);
-        col[o] += c[0] / 5; col[o + 1] += c[1] / 5; col[o + 2] += c[2] / 5;
-      }
+      const x = g.x0 + (i + 0.5) * cfg.cell, bin = binOf(i), o = (j * g.cols + i) * 3, sd = cfg.cell * 0.2;
+      addSample(img, H, x, y, 0.2, col, o);
+      addSample(img, H, x - sd, y, 0.2, col, o);
+      addSample(img, H, x + sd, y, 0.2, col, o);
+      addSample(img, H, x, y - sd, 0.2, col, o);
+      addSample(img, H, x, y + sd, 0.2, col, o);
       let best = 0, bd = Infinity;
       for (let s = 0; s < n; s++) {
         const q = palRef(s, bin, t), d = (col[o] - q[0]) ** 2 + (col[o + 1] - q[1]) ** 2 + (col[o + 2] - q[2]) ** 2;
@@ -368,16 +377,17 @@ export function decodeFrame(img: Img, wantData: (h: Header) => boolean = () => t
   const anchors = findAnchors(img);
   if (!anchors) return { status: 'sem-marcadores', anchors: null };
   for (let r = 0; r < 4; r++) { // orientação desconhecida: tenta as 4 rotações, o CRC decide
-    const H = homography(ANCHOR_CENTERS, [0, 1, 2, 3].map((i) => anchors[(i + r) % 4]));
+    const ordered = [0, 1, 2, 3].map((i) => anchors[(i + r) % 4]); // TL, TR, BR, BL do quadro
+    const H = homography(ANCHOR_CENTERS, ordered);
     const top = readHeader(img, H, HDR_TOP_Y);
     if (!top) continue;
     const bot = readHeader(img, H, HDR_BOT_Y);
     // topo e base com quadros diferentes = câmera filmou a troca de imagem
-    if (!bot || bot.frame !== top.frame || bot.session !== top.session) return { status: 'misturado', anchors, header: top };
+    if (!bot || bot.frame !== top.frame || bot.session !== top.session) return { status: 'misturado', anchors: ordered, header: top };
     if (top.type === TYPE_DATA) {
-      return { status: 'ok', anchors, header: top, llr: wantData(top) ? softBits(classify(img, H, CONFIGS[top.config])) : undefined };
+      return { status: 'ok', anchors: ordered, header: top, llr: wantData(top) ? softBits(classify(img, H, CONFIGS[top.config])) : undefined };
     }
-    return { status: 'ok', anchors, header: top, ...measure(classify(img, H, CONFIGS[top.config]), top) };
+    return { status: 'ok', anchors: ordered, header: top, ...measure(classify(img, H, CONFIGS[top.config]), top) };
   }
   return { status: 'sem-cabecalho', anchors };
 }

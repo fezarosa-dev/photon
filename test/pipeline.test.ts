@@ -61,3 +61,12 @@ test('todos os níveis: cabeçalho lido; mostra taxa de erro simulada', () => {
   });
   console.log(rows.join('\n'));
 });
+
+test('cantos voltam na ordem do quadro: dá o ângulo da tela na imagem (giro do painel)', () => {
+  const angle = (corners: typeof TILT) => {
+    const a = decodeFrame(camera(frame(0), corners)).anchors!;
+    return (Math.round((Math.atan2(a[1].y - a[0].y, a[1].x - a[0].x) * 180) / Math.PI / 90) * 90 + 360) % 360;
+  };
+  assert.equal(angle(TILT), 0);                                  // tela em pé
+  assert.equal(angle([TILT[2], TILT[3], TILT[0], TILT[1]]), 180); // celular de ponta-cabeça
+});

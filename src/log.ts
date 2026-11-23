@@ -3,6 +3,7 @@ import { CONFIGS, TEST_FPS, kbps, type Decoded } from './frame.ts';
 
 const MAX_RAW = 200_000; // ~15 MB de CSV; suficiente para >1 h a 50 leituras/s
 const GAP = 60;          // salto de índice que encerra um bloco (celular perdeu a tela)
+const REORDER = 10;      // workers em paralelo entregam fora de ordem: tolera recuo pequeno
 const MIN_READS = 5;     // leituras por combinação (fps × nível) em cada distância
 const TARGETS = [0.5, 0.6, 0.7, 0.8]; // distâncias (escala) que a varredura precisa cobrir
 export type Action = 'pronto' | 'enquadre' | 'parado' | 'aproxime' | 'afaste';
@@ -52,11 +53,11 @@ export function createLog() {
     r.reads++; r.errors += res.errors!; r.cells += res.cells!; r.cam += cam; r.proc += proc;
 
     const f = h.frame;
-    if (!blk || blk.fps !== h.fps || blk.config !== h.config || f < blk.max || f - blk.max > GAP) {
+    if (!blk || blk.fps !== h.fps || blk.config !== h.config || f < blk.min - REORDER || f - blk.max > GAP) {
       closeBlock();
       blk = { fps: h.fps, config: h.config, frames: new Set(), min: f, max: f, scaleSum: 0, n: 0 };
     }
-    blk.frames.add(f); blk.max = f; blk.scaleSum += scale; blk.n++;
+    blk.frames.add(f); blk.max = Math.max(blk.max, f); blk.min = Math.min(blk.min, f); blk.scaleSum += scale; blk.n++;
   }
 
   function files(meta: string[]) {
