@@ -1,8 +1,24 @@
-# Photon
+<h1 align="center">Photon</h1>
 
-Transferência de arquivos entre computador e celular **pela luz**: a tela de um aparelho mostra o arquivo em quadros coloridos e a câmera do outro lê. Sem rede, sem cabo, sem servidor.
+<p align="center">
+  Transferência de arquivos entre computador e celular <b>pela luz</b>.<br>
+  A tela de um aparelho mostra o arquivo em quadros coloridos e a câmera do outro lê.<br>
+  Sem rede, sem cabo, sem servidor.
+</p>
 
-**Use agora:** https://fezarosa-dev.github.io/photon/
+<p align="center">
+  <a href="https://fezarosa-dev.github.io/photon/"><img alt="Abrir o app" src="https://img.shields.io/badge/abrir_o_app-online-0a84ff?style=for-the-badge"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/fezarosa-dev/photon/actions/workflows/pages.yml"><img alt="Publicação" src="https://github.com/fezarosa-dev/photon/actions/workflows/pages.yml/badge.svg"></a>
+  <img alt="Privacidade: nada sai dos aparelhos" src="https://img.shields.io/badge/privacidade-nada_sai_dos_aparelhos-30d158">
+  <img alt="Dependências em produção: 0" src="https://img.shields.io/badge/depend%C3%AAncias_em_produ%C3%A7%C3%A3o-0-30d158">
+  <img alt="TypeScript 7" src="https://img.shields.io/badge/TypeScript-7-3178c6?logo=typescript&logoColor=white">
+  <img alt="Vite 8" src="https://img.shields.io/badge/Vite-8-646cff?logo=vite&logoColor=white">
+  <img alt="Testes em Node 24" src="https://img.shields.io/badge/testes-Node_24-5fa04e?logo=nodedotjs&logoColor=white">
+  <img alt="Funciona em iPhone e PC" src="https://img.shields.io/badge/funciona_em-iPhone_·_PC-8e8e93">
+</p>
 
 ## Por quê
 
